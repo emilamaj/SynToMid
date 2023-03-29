@@ -1,8 +1,11 @@
-## SynToMid
+# SynToMid
 This tool helps you convert synthesia-like piano videos of Youtube to a MIDI (.mid) file that can be read by most music tools.
-Currently, the only part that is implemented is the one that grabs the waterfall of keys and unrolls it into a long png image
+Currently, the only part that is implemented is the one that grabs the waterfall of keys and unrolls it into a long png image.
+Todo:
+- Fix YoutubeStitch.py so that the note timings are respected. (Find average scroll rate, and blindly stitch ? Scroll rate might not be constant...)
+- Implement ReadNotes.py, which converts the stitched image to a midi file.
 
-# YoutubeStitch.py
+## YoutubeStitch.py
 This is the tool that stitches together the frames of the Youtube video into a tall png image of the keys pressed.
 
 ![Example output](/output.png)
