@@ -3,6 +3,7 @@ import numpy as np
 from pytube import YouTube
 import argparse
 import os
+import time
 
 # Download if not already downloaded. (in 480p at most)
 def download_video(url):
@@ -70,6 +71,7 @@ def stitch_frames(video_path, height, interval, start_time, end_time):
     ret, stitched_image = cap.read()
     stitched_image = stitched_image[:int(stitched_image.shape[0] * height), :]
     current_time = start_time + interval
+    nextPct = 5 # Print progress every 5%
 
     while current_time <= end_time:
 # NOTE: Using cap.set might not be the fastest way (maybe read every frame but process only those of interest)
@@ -81,8 +83,11 @@ def stitch_frames(video_path, height, interval, start_time, end_time):
         blend_images(frame, stitched_image, shift)
         stitched_image = concatenate(frame, stitched_image, shift)
         
-        if current_time % end_time // 100 == 0: # Print at every percent of progress
-            print(f"Processed frame at {current_time}/{end_time} seconds ({current_time / end_time * 100:.2f}%) shift: {shift}")
+        # Print every time progress of 5% is made
+        currentPct = int(100*(current_time-start_time) / (end_time-start_time))
+        if currentPct >= nextPct:
+            nextPct += 5
+            print(f"Processed frame at {current_time}/{end_time} seconds ({currentPct}%) shift: {shift}")
         current_time += interval
 
     return stitched_image
@@ -96,15 +101,22 @@ def main():
     parser.add_argument("end_time", type=float, help="The end time of the video, in seconds")
     args = parser.parse_args()
 
+    # Time the download
+    t0 = time.time()
     video_path = download_video(args.url)
+    t1 = time.time()
+    print(f"Downloaded video in {t1 - t0:.2f} seconds")
     height = float(args.height.strip("%")) / 100
     stitched_image = stitch_frames(video_path, height, args.interval, args.start_time, args.end_time)
+    t2 = time.time()
+    print(f"Stitched frames in {t2 - t1:.2f} seconds")
     output_file = "output.png"
     save_image(stitched_image, output_file)
-    print(f"Stitched image saved to {output_file}")
+    t3 = time.time()
+    print(f"Stitched image saved to {output_file} in {t3 - t2:.2f} seconds")
 
 if __name__ == "__main__":
     main()
 
 # To run the script, use the following command:
-# python SynToMid.py https://www.youtube.com/watch?v=Zj_psrTUW_w 25% 0.5 5 15
+# python YoutubeStitch.py https://www.youtube.com/watch?v=Zj_psrTUW_w 25% 0.5 5 15
