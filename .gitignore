@@ -1,0 +1,4 @@
+# Ignore 'videos' folder
+videos
+# Ignore output.png file
+output.png
