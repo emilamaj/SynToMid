@@ -42,6 +42,7 @@ def find_shift(frame, stitched_image):
     # print(f"Best shift: {best_shift}, best score: {best_score}, max shift: {max_shift}")
     return best_shift
 
+# Blends the part of the frame the is still in common with the stitched image (removes artefacts)
 def blend_images(frame, stitched_image, shift):
     # An image is represented as a 3D array of shape (height, width, channels), the axis starting from the top left corner.
     alpha = 0.5
@@ -53,6 +54,7 @@ def blend_images(frame, stitched_image, shift):
     # print(f"Dimensions of operands: {stitched_image[:common_height].shape}, {frame[shift:common_height].shape}")
     stitched_image[:common_height] = cv2.addWeighted(stitched_image[:common_height], alpha, frame[shift:], 1 - alpha, 0)
 
+# Pile the new part of the frame on top of the stitched image
 def concatenate(frame, stitched_image, shift):
     new_part = frame[:shift]
     stitched_image = np.concatenate((new_part, stitched_image), axis=0)
@@ -64,21 +66,23 @@ def save_image(stitched_image, output_file):
 def stitch_frames(video_path, height, interval, start_time, end_time):
     cap = cv2.VideoCapture(video_path)
     fps = int(cap.get(cv2.CAP_PROP_FPS))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, int(start_time * fps))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(start_time * fps)) # Seek the start time
     ret, stitched_image = cap.read()
     stitched_image = stitched_image[:int(stitched_image.shape[0] * height), :]
     current_time = start_time + interval
 
     while current_time <= end_time:
-        # Print at every percent of progress
-        if current_time % end_time // 100 == 0:
-            print(f"Processing frame at {current_time}/{end_time} seconds ({current_time / end_time * 100:.2f}%)")
+# NOTE: Using cap.set might not be the fastest way (maybe read every frame but process only those of interest)
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(current_time * fps))
         ret, frame = cap.read()
-        frame = frame[:int(frame.shape[0] * height), :]
+
+        frame = frame[:int(frame.shape[0] * height), :] # Clip the frame to select only the top part
         shift = find_shift(frame, stitched_image)
         blend_images(frame, stitched_image, shift)
         stitched_image = concatenate(frame, stitched_image, shift)
+        
+        if current_time % end_time // 100 == 0: # Print at every percent of progress
+            print(f"Processed frame at {current_time}/{end_time} seconds ({current_time / end_time * 100:.2f}%) shift: {shift}")
         current_time += interval
 
     return stitched_image
@@ -98,7 +102,7 @@ def main():
     output_file = "output.png"
     save_image(stitched_image, output_file)
     print(f"Stitched image saved to {output_file}")
-    
+
 if __name__ == "__main__":
     main()
 
