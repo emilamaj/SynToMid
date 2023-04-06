@@ -14,7 +14,7 @@ def preprocess_image(image_file):
     image = cv2.imread(image_file, 0)
     _, thresholded = cv2.threshold(image, 127, 255, cv2.THRESH_BINARY)
     filtered = cv2.medianBlur(thresholded, 5)
-    cv2.imwrite("thresholded_image.png", filtered)
+    cv2.imwrite("debug_threshold.png", filtered)
     return filtered
 
 # This function returns the area inside the rectangle that is filled with white pixels, and the part that is filled with black pixels.
@@ -26,41 +26,47 @@ def match_area(image, rectangle):
     return white_area, black_area
 
 # This function tries to fit as little rectangles as possible inside the given rectangle, while maximizing the area coverage ratio.
-def fit_rectangles(image, rectangle, max_rectangles=10):
+
+def fit_rectangles(image, rectangle, min_cover_ratio=0.95, max_rectangles=10):
     x, y, w, h = rectangle
-    optimal_rectangles = [rectangle]
-    white_area, black_area = match_area(image, rectangle)
-    max_area_ratio = white_area / (white_area + black_area)
+    shape_roi = image[y:y+h, x:x+w]
 
-    for num_rectangles in range(2, max_rectangles + 1):
-        best_area_ratio = 0
-        best_combination = None
+    contours, _ = cv2.findContours(shape_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        return []
 
-        for sizes in itertools.product(range(1, w), repeat=num_rectangles - 1):
-            if sum(sizes) != w:
-                continue
+    largest_contour = max(contours, key=cv2.contourArea)
+    shape_mask = np.zeros_like(shape_roi)
+    cv2.drawContours(shape_mask, [largest_contour], -1, 255, -1)
 
-            candidate_rectangles = [(x, y, size, h) for size in sizes]
+    fitted_rectangles = []
+    current_cover = 0
+    initial_area = cv2.contourArea(largest_contour)
+    target_area = initial_area * min_cover_ratio
 
-            sum_white_area = 0
-            sum_black_area = 0
-            for r in candidate_rectangles:
-                w,b = match_area(image, r)
-                sum_white_area += w
-                sum_black_area += b
-            candidate_ratio = sum_white_area / (sum_white_area + sum_black_area)
+    while current_cover < target_area and len(fitted_rectangles) < max_rectangles:
+        min_area_rect = cv2.minAreaRect(largest_contour)
+        box = cv2.boxPoints(min_area_rect)
+        box = np.int0(box)
 
-            if candidate_ratio > best_area_ratio:
-                best_area_ratio = candidate_ratio
-                best_combination = candidate_rectangles
+        fitted_rect = cv2.boundingRect(box)
+        fitted_rectangles.append(fitted_rect)
 
-        if best_area_ratio > max_area_ratio:
-            max_area_ratio = best_area_ratio
-            optimal_rectangles = best_combination
-        else:
+        rx, ry, rw, rh = fitted_rect
+        cv2.rectangle(shape_mask, (rx, ry), (rx + rw, ry + rh), 0, -1)
+
+        contours, _ = cv2.findContours(shape_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
             break
 
-    return optimal_rectangles
+        largest_contour = max(contours, key=cv2.contourArea)
+        current_cover = initial_area - cv2.contourArea(largest_contour)
+
+    # Offset the fitted rectangles to the original image coordinates
+    fitted_rectangles = [(x + rx, y + ry, rw, rh) for rx, ry, rw, rh in fitted_rectangles]
+    
+    return fitted_rectangles
 
 def detect_rectangles(image):
     """
@@ -73,7 +79,7 @@ def detect_rectangles(image):
 
     # Distance transform and normalization
     dist_transform = cv2.distanceTransform(dilated, cv2.DIST_L2, 5)
-    _, sure_fg = cv2.threshold(dist_transform, 0.65 * dist_transform.max(), 255, 0)
+    _, sure_fg = cv2.threshold(dist_transform, 0.35 * dist_transform.max(), 255, 0)
 
     # Finding sure background area
     sure_fg = np.uint8(sure_fg)
@@ -95,6 +101,7 @@ def detect_rectangles(image):
     unique_markers = np.unique(markers)
 
     rectangles = []
+    min_cover_ratio = 0.95
 
     for marker in unique_markers:
         if marker == 0 or marker == 1:
@@ -108,19 +115,28 @@ def detect_rectangles(image):
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
             if w > 0 and h > 0:
+                
+                # # HACK: Remove
+                # if len(rectangles) > 4:
+                #     break
+
                 rect = (x, y, w, h)
                 white_area, black_area = match_area(image, rect)
                 area_coverage_ratio = white_area / (white_area + black_area)
-                # print(f"Rectangle: x: {x}, y: {y}, w: {w}, h: {h}")
-                # print(f"Area coverage ratio: {area_coverage_ratio}")
+                print(f"Rectangle: x: {x}, y: {y}, w: {w}, h: {h}")
+                print(f"Area coverage ratio: {area_coverage_ratio}")
 
                 if area_coverage_ratio < 0.05:
+                    print(f"### Skipping rectangle: {rect}")
                     continue # Likely a rectangle enclosing the entire image.
-                elif area_coverage_ratio < 0.98: # If the area has less than 98% white pixels, the rectangle probably encloses multiple keys.
-                    sub_rectangles = fit_rectangles(image, rect)
-                    rectangles.extend(sub_rectangles)
+                elif area_coverage_ratio < min_cover_ratio: # If the area has less than 98% white pixels, the rectangle probably encloses multiple keys.
+                    sub_rectangles = fit_rectangles(image, rect, min_cover_ratio, 10)
+                    rectangles = rectangles + sub_rectangles
+                    print(f"Subrectangles: {sub_rectangles}")
                 else:
                     rectangles.append(rect)
+                    print("Single rectangle.")
+
 
     # return rectangles
 
@@ -129,7 +145,7 @@ def detect_rectangles(image):
         x, y, w, h = rect
         cv2.rectangle(image, (x, y), (x + w, y + h), (150, 20, 200), 2) # If the color isn't visible, change the values.
     
-    cv2.imwrite("rectangles.png", image)
+    cv2.imwrite("debug_rectangles.png", image)
 
     return rectangles
 
