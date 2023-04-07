@@ -4,7 +4,6 @@ import sys
 import argparse
 import mido
 from mido import Message, MidiFile, MidiTrack
-import itertools
 
 def preprocess_image(image_file):
     """
@@ -18,55 +17,242 @@ def preprocess_image(image_file):
     return filtered
 
 # This function returns the area inside the rectangle that is filled with white pixels, and the part that is filled with black pixels.
-def match_area(image, rectangle):
-    x, y, w, h = rectangle
-    area = w * h
-    white_area = np.sum(image[y:y + h, x:x + w] == 255)
-    black_area = area - white_area
-    return white_area, black_area
+def match_area(image, rectangle, outer_rectangle=None):
+    # If rectangle is a list of rectangles, return the sum of the areas of all rectangles. (Intersections are not counted twice.)
+    if isinstance(rectangle, list) and (isinstance(rectangle[0], list) or isinstance(rectangle[0], tuple)):
+        # Find the bounding box of all rectangles.
+        x, y, w, h = outer_rectangle
+        area = w * h
 
-# This function tries to fit as little rectangles as possible inside the given rectangle, while maximizing the area coverage ratio.
+        # Create a mask of the rectangles
+        intersection_mask = np.zeros(image.shape, dtype=np.uint8)
+        intersection_mask = intersection_mask[y:y + h, x:x + w]
 
-def fit_rectangles(image, rectangle, min_cover_ratio=0.95, max_rectangles=10):
-    x, y, w, h = rectangle
-    shape_roi = image[y:y+h, x:x+w]
+        for rect in rectangle:
+            # Fill the mask with white pixels where rect is located.
+            x1, y1, w1, h1 = rect
+            intersection_mask[y1 - y:y1 - y + h1, x1 - x:x1 - x + w1] = 255
 
-    contours, _ = cv2.findContours(shape_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if not contours:
-        return []
+        # Count the number of white pixels that are both in the mask and in the image.
+        white_area = np.sum(np.logical_and(image[y:y + h, x:x + w] == 255, intersection_mask == 255))
+        black_area = area - white_area
 
-    largest_contour = max(contours, key=cv2.contourArea)
-    shape_mask = np.zeros_like(shape_roi)
-    cv2.drawContours(shape_mask, [largest_contour], -1, 255, -1)
+        return white_area, black_area
+    else:
+        x, y, w, h = rectangle
+        area = w * h
+        white_area = np.sum(image[y:y + h, x:x + w] == 255)
+        black_area = area - white_area
+        return white_area, black_area
 
-    fitted_rectangles = []
-    current_cover = 0
-    initial_area = cv2.contourArea(largest_contour)
-    target_area = initial_area * min_cover_ratio
+# This function tries to fit multiple sub-rectangles inside the given rectangle, such that the area covered by the rectangles is at least min_cover_ratio.
+def fit_rectangles(image, rectangle, min_cover_ratio=0.95, max_rectangles=3):
+    # Divide outer_rectangle vertically into num_rectangles parts, of the same width and height
+    def initial_guess(num_rectangles, outer_rectangle):
+        x, y, w, h = outer_rectangle
+        rectangles = []
+        for i in range(num_rectangles):
+            rectangles.append([x, y + i * h // num_rectangles, w, h // num_rectangles])
+        return rectangles
 
-    while current_cover < target_area and len(fitted_rectangles) < max_rectangles:
-        min_area_rect = cv2.minAreaRect(largest_contour)
-        box = cv2.boxPoints(min_area_rect)
-        box = np.int0(box)
+    # Move individual rectangles in the position that maximize the area covered by white pixels.
+    def optimize_position(rectangles, image, outer_rectangle, amplitude=1):
+        combined_area_white, combined_area_black = match_area(image, rectangles, outer_rectangle=rectangle)
+        combined_cover_ratio = combined_area_white / (combined_area_white + combined_area_black)
 
-        fitted_rect = cv2.boundingRect(box)
-        fitted_rectangles.append(fitted_rect)
+        for i in range(len(rectangles)):
+            # Process rectangle i
+            x, y, w, h = rectangles[i]
+            position_ratios = [] # Stores the area covered by white pixels for each position, to select the best position.
+            temprect = rectangles.copy()
 
-        rx, ry, rw, rh = fitted_rect
-        cv2.rectangle(shape_mask, (rx, ry), (rx + rw, ry + rh), 0, -1)
+            # Move the rectangle to the left.
+            # Check if the rectangle is still inside the outer rectangle.
+            if x - amplitude >= outer_rectangle[0]:
+                temprect = rectangles.copy()
+                temprect[i] = (x - amplitude, y, w, h)
+                larea_white, larea_black = match_area(image, temprect, outer_rectangle=rectangle)
+                # Avoid division by zero.
+                if larea_white + larea_black == 0:
+                    position_ratios.append(0)
+                else:
+                    position_ratios.append(larea_white / (larea_white + larea_black))
+            else:
+                position_ratios.append(0)
 
-        contours, _ = cv2.findContours(shape_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            break
+            # Move the rectangle to the right.
+            # Check if the rectangle is still inside the outer rectangle.
+            if x + w + amplitude <= outer_rectangle[0] + outer_rectangle[2]:
+                temprect = rectangles.copy()
+                temprect[i] = (x + amplitude, y, w, h)
+                rarea_white, rarea_black = match_area(image, temprect, outer_rectangle=rectangle)
+                # Avoid division by zero.
+                if rarea_white + rarea_black == 0:
+                    position_ratios.append(0)
+                else:
+                    position_ratios.append(rarea_white / (rarea_white + rarea_black))
+            else:
+                position_ratios.append(0)
 
-        largest_contour = max(contours, key=cv2.contourArea)
-        current_cover = initial_area - cv2.contourArea(largest_contour)
+            # Move the rectangle up.
+            # Check if the rectangle is still inside the outer rectangle.
+            if y - amplitude >= outer_rectangle[1]:
+                temprect = rectangles.copy()
+                temprect[i] = (x, y - amplitude, w, h)
+                uarea_white, uarea_black = match_area(image, temprect, outer_rectangle=rectangle)
+                # Avoid division by zero.
+                if uarea_white + uarea_black == 0:
+                    position_ratios.append(0)
+                else:
+                    position_ratios.append(uarea_white / (uarea_white + uarea_black))
+            else:
+                position_ratios.append(0)
 
-    # Offset the fitted rectangles to the original image coordinates
-    fitted_rectangles = [(x + rx, y + ry, rw, rh) for rx, ry, rw, rh in fitted_rectangles]
-    
-    return fitted_rectangles
+            # Move the rectangle down.
+            # Check if the rectangle is still inside the outer rectangle.
+            if y + h + amplitude <= outer_rectangle[1] + outer_rectangle[3]:
+                temprect = rectangles.copy()
+                temprect[i] = (x, y + amplitude, w, h)
+                darea_white, darea_black = match_area(image, temprect, outer_rectangle=rectangle)
+                # Avoid division by zero.
+                if darea_white + darea_black == 0:
+                    position_ratios.append(0)
+                else:
+                    position_ratios.append(darea_white / (darea_white + darea_black))
+            else:
+                position_ratios.append(0)
+
+            # Find the best position for the rectangle.
+            best_position = np.argmax(position_ratios)
+            # Compare the best position with the current position.
+            if combined_cover_ratio > position_ratios[best_position]:
+                return 
+
+            # Move the rectangle to the best position.
+            if best_position == 0:
+                rectangles[i] = [x - amplitude, y, w, h]
+            elif best_position == 1:
+                rectangles[i] = [x + amplitude, y, w, h]
+            elif best_position == 2:
+                rectangles[i] = [x, y - amplitude, w, h]
+            elif best_position == 3:
+                rectangles[i] = [x, y + amplitude, w, h]
+
+    # Change the size of individual rectangles to maximize the area covered by white pixels.
+    def optimize_shape(rectangles, image, outer_rectangle, amplitude=1):
+        combined_area_white, combined_area_black = match_area(image, rectangles, outer_rectangle=outer_rectangle)
+        combined_cover_ratio = combined_area_white / (combined_area_white + combined_area_black)
+
+        for i in range(len(rectangles)):
+            # Process rectangle i
+            x, y, w, h = rectangles[i]
+            shape_ratios = [] # Stores the area covered by white pixels for each shape, to select the best shape.
+            
+
+            # Increase the width of the rectangle.
+            # Check if the rectangle is still inside the outer rectangle.
+            if x + w + amplitude <= outer_rectangle[0] + outer_rectangle[2]:
+                temprect = rectangles.copy()
+                temprect[i] = (x, y, w + amplitude, h)
+                areas_white, areas_black = match_area(image, temprect, outer_rectangle=outer_rectangle)
+                # Avoid division by zero.
+                if areas_white + areas_black == 0:
+                    shape_ratios.append(0)
+                else:
+                    shape_ratios.append(areas_white / (areas_white + areas_black))
+            else:
+                shape_ratios.append(0)
+
+            # Decrease the width of the rectangle.
+            # Check if the rectangle still has a positive width.
+            if w - amplitude > 0:
+                temprect = rectangles.copy()
+                temprect[i] = (x, y, w - amplitude, h)
+                larea_white, larea_black = match_area(image, temprect, outer_rectangle=outer_rectangle)
+                # Avoid division by zero.
+                if larea_white + larea_black == 0:
+                    shape_ratios.append(0)
+                else:
+                    shape_ratios.append(larea_white / (larea_white + larea_black))
+            else:
+                shape_ratios.append(0)
+
+            # Increase the height of the rectangle.
+            # Check if the rectangle is still inside the outer rectangle.
+            if y + h + amplitude <= outer_rectangle[1] + outer_rectangle[3]:
+                temprect = rectangles.copy()
+                temprect[i] = (x, y, w, h + amplitude)
+                darea_white, darea_black = match_area(image, temprect, outer_rectangle=outer_rectangle)
+                # Avoid division by zero.
+                if darea_white + darea_black == 0:
+                    shape_ratios.append(0)
+                else:
+                    shape_ratios.append(darea_white / (darea_white + darea_black))
+            else:
+                shape_ratios.append(0)
+
+            # Decrease the height of the rectangle.
+            # Check if the rectangle still has a positive height.
+            if h - amplitude > 0:
+                temprect = rectangles.copy()
+                temprect[i] = (x, y, w, h - amplitude)
+                uarea_white, uarea_black = match_area(image, temprect, outer_rectangle=outer_rectangle)
+                # Avoid division by zero.
+                if uarea_white + uarea_black == 0:
+                    shape_ratios.append(0)
+                else:
+                    shape_ratios.append(uarea_white / (uarea_white + uarea_black))
+            else:
+                shape_ratios.append(0)
+
+            # Find the best shape for the rectangle.
+            best_shape = np.argmax(shape_ratios)
+
+            # Compare the best shape with the current shape.
+            if combined_cover_ratio > shape_ratios[best_shape]:
+                return
+
+            # Change the shape of the rectangle to the best shape.
+            if best_shape == 0:
+                rectangles[i] = [x, y, w + amplitude, h]
+            elif best_shape == 1:
+                rectangles[i] = [x, y, w - amplitude, h]
+            elif best_shape == 2:
+                rectangles[i] = [x, y, w, h + amplitude]
+            elif best_shape == 3:
+                rectangles[i] = [x, y, w, h - amplitude]
+
+    # Calculate max area to be covered by white pixels.
+    ref_white, ref_black = match_area(image, rectangle)
+
+    for num_rectangles in range(1, max_rectangles + 1):
+        rectangles = initial_guess(num_rectangles, rectangle)
+        for step in range(100):  # Repeat optimization steps 10 times
+            # if step < 20:
+            #     ampl = 10
+            # elif step < 40:
+            #     ampl = 5
+            # elif step < 70:
+            #     ampl = 3
+            # else:
+            ampl = 1
+            
+            optimize_position(rectangles, image, rectangle, amplitude=ampl)
+            optimize_shape(rectangles, image, rectangle, amplitude=ampl)
+            areas_white, areas_black = match_area(image, rectangles, outer_rectangle=rectangle)
+            cover_ratio = areas_white / (areas_white + areas_black)
+            print(rectangles)
+            print(f"Areas white: {areas_white}, Areas black: {areas_black}, Cover ratio: {cover_ratio}")
+
+            if cover_ratio >= min_cover_ratio:
+                print(f"Found {num_rectangles} rectangles. with cover ratio {cover_ratio}")
+                return rectangles
+        
+        print(f"Best cover ratio {cover_ratio} found with {num_rectangles} rectangles.")
+
+#HACK: REMOVE THIS
+    # return [rectangle]
+    return rectangles
 
 def detect_rectangles(image):
     """
@@ -116,9 +302,9 @@ def detect_rectangles(image):
             x, y, w, h = cv2.boundingRect(contour)
             if w > 0 and h > 0:
                 
-                # # HACK: Remove
-                # if len(rectangles) > 4:
-                #     break
+                # HACK: Remove
+                if len(rectangles) > 4:
+                    break
 
                 rect = (x, y, w, h)
                 white_area, black_area = match_area(image, rect)
@@ -130,8 +316,10 @@ def detect_rectangles(image):
                     print(f"### Skipping rectangle: {rect}")
                     continue # Likely a rectangle enclosing the entire image.
                 elif area_coverage_ratio < min_cover_ratio: # If the area has less than 98% white pixels, the rectangle probably encloses multiple keys.
-                    sub_rectangles = fit_rectangles(image, rect, min_cover_ratio, 10)
-                    rectangles = rectangles + sub_rectangles
+                    # sub_rectangles = fit_rectangles(image, rect, min_cover_ratio, 10)
+                    sub_rectangles = fit_rectangles(image, rect, min_cover_ratio, 2)
+                    sr = [tuple(int(a) for a in r) for r in sub_rectangles]
+                    rectangles = rectangles + sr
                     print(f"Subrectangles: {sub_rectangles}")
                 else:
                     rectangles.append(rect)
