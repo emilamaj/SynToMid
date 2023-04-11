@@ -4,6 +4,8 @@ import sys
 import argparse
 import mido
 from mido import Message, MidiFile, MidiTrack
+import random
+
 
 def preprocess_image(image_file):
     """
@@ -45,214 +47,89 @@ def match_area(image, rectangle, outer_rectangle=None):
         black_area = area - white_area
         return white_area, black_area
 
-# This function tries to fit multiple sub-rectangles inside the given rectangle, such that the area covered by the rectangles is at least min_cover_ratio.
-def fit_rectangles(image, rectangle, min_cover_ratio=0.95, max_rectangles=3):
-    # Divide outer_rectangle vertically into num_rectangles parts, of the same width and height
-    def initial_guess(num_rectangles, outer_rectangle):
-        x, y, w, h = outer_rectangle
-        rectangles = []
-        for i in range(num_rectangles):
-            rectangles.append([x, y + i * h // num_rectangles, w, h // num_rectangles])
-        return rectangles
+def separate_contours(image, contour, threshold=10):
+    """
+    Separates merged contours into individual convex contours.
 
-    # Move individual rectangles in the position that maximize the area covered by white pixels.
-    def optimize_position(rectangles, image, outer_rectangle, amplitude=1):
-        combined_area_white, combined_area_black = match_area(image, rectangles, outer_rectangle=rectangle)
-        combined_cover_ratio = combined_area_white / (combined_area_white + combined_area_black)
+    Args:
+    image (np.array): Binary image containing the contours.
+    contour (list): A list of points representing the contour to be separated.
+    threshold (float): Distance threshold for convexity defect points to be considered as separation points.
 
-        for i in range(len(rectangles)):
-            # Process rectangle i
-            x, y, w, h = rectangles[i]
-            position_ratios = [] # Stores the area covered by white pixels for each position, to select the best position.
-            temprect = rectangles.copy()
+    Returns:
+    list: A list of individual convex contours.
+    """
 
-            # Move the rectangle to the left.
-            # Check if the rectangle is still inside the outer rectangle.
-            if x - amplitude >= outer_rectangle[0]:
-                temprect = rectangles.copy()
-                temprect[i] = (x - amplitude, y, w, h)
-                larea_white, larea_black = match_area(image, temprect, outer_rectangle=rectangle)
-                # Avoid division by zero.
-                if larea_white + larea_black == 0:
-                    position_ratios.append(0)
-                else:
-                    position_ratios.append(larea_white / (larea_white + larea_black))
-            else:
-                position_ratios.append(0)
+    # Find convex hull
+    hull = cv2.convexHull(contour, returnPoints=False)
 
-            # Move the rectangle to the right.
-            # Check if the rectangle is still inside the outer rectangle.
-            if x + w + amplitude <= outer_rectangle[0] + outer_rectangle[2]:
-                temprect = rectangles.copy()
-                temprect[i] = (x + amplitude, y, w, h)
-                rarea_white, rarea_black = match_area(image, temprect, outer_rectangle=rectangle)
-                # Avoid division by zero.
-                if rarea_white + rarea_black == 0:
-                    position_ratios.append(0)
-                else:
-                    position_ratios.append(rarea_white / (rarea_white + rarea_black))
-            else:
-                position_ratios.append(0)
+    # Calculate convexity defects
+    defects = cv2.convexityDefects(contour, hull)
 
-            # Move the rectangle up.
-            # Check if the rectangle is still inside the outer rectangle.
-            if y - amplitude >= outer_rectangle[1]:
-                temprect = rectangles.copy()
-                temprect[i] = (x, y - amplitude, w, h)
-                uarea_white, uarea_black = match_area(image, temprect, outer_rectangle=rectangle)
-                # Avoid division by zero.
-                if uarea_white + uarea_black == 0:
-                    position_ratios.append(0)
-                else:
-                    position_ratios.append(uarea_white / (uarea_white + uarea_black))
-            else:
-                position_ratios.append(0)
+    if defects is None:
+        return [contour]
 
-            # Move the rectangle down.
-            # Check if the rectangle is still inside the outer rectangle.
-            if y + h + amplitude <= outer_rectangle[1] + outer_rectangle[3]:
-                temprect = rectangles.copy()
-                temprect[i] = (x, y + amplitude, w, h)
-                darea_white, darea_black = match_area(image, temprect, outer_rectangle=rectangle)
-                # Avoid division by zero.
-                if darea_white + darea_black == 0:
-                    position_ratios.append(0)
-                else:
-                    position_ratios.append(darea_white / (darea_white + darea_black))
-            else:
-                position_ratios.append(0)
+    separation_points = []
 
-            # Find the best position for the rectangle.
-            best_position = np.argmax(position_ratios)
-            # Compare the best position with the current position.
-            if combined_cover_ratio > position_ratios[best_position]:
-                return 
+    for i in range(defects.shape[0]):
+        s, e, f, d = defects[i, 0]
+        if d > threshold:
+            separation_points.append(f)
 
-            # Move the rectangle to the best position.
-            if best_position == 0:
-                rectangles[i] = [x - amplitude, y, w, h]
-            elif best_position == 1:
-                rectangles[i] = [x + amplitude, y, w, h]
-            elif best_position == 2:
-                rectangles[i] = [x, y - amplitude, w, h]
-            elif best_position == 3:
-                rectangles[i] = [x, y + amplitude, w, h]
+    # If no separation points are found, return the original contour
+    if len(separation_points) == 0:
+        return [contour]
 
-    # Change the size of individual rectangles to maximize the area covered by white pixels.
-    def optimize_shape(rectangles, image, outer_rectangle, amplitude=1):
-        combined_area_white, combined_area_black = match_area(image, rectangles, outer_rectangle=outer_rectangle)
-        combined_cover_ratio = combined_area_white / (combined_area_white + combined_area_black)
+    separated_contours = []
+    separation_points.append(separation_points[0])  # Close the loop
 
-        for i in range(len(rectangles)):
-            # Process rectangle i
-            x, y, w, h = rectangles[i]
-            shape_ratios = [] # Stores the area covered by white pixels for each shape, to select the best shape.
-            
+    # Create separate contours based on the separation points
+    for i in range(len(separation_points) - 1):
+        start = separation_points[i]
+        end = separation_points[i + 1]
+        separated_contour = contour[start:end]
+        separated_contours.append(separated_contour)
 
-            # Increase the width of the rectangle.
-            # Check if the rectangle is still inside the outer rectangle.
-            if x + w + amplitude <= outer_rectangle[0] + outer_rectangle[2]:
-                temprect = rectangles.copy()
-                temprect[i] = (x, y, w + amplitude, h)
-                areas_white, areas_black = match_area(image, temprect, outer_rectangle=outer_rectangle)
-                # Avoid division by zero.
-                if areas_white + areas_black == 0:
-                    shape_ratios.append(0)
-                else:
-                    shape_ratios.append(areas_white / (areas_white + areas_black))
-            else:
-                shape_ratios.append(0)
+    return separated_contours
 
-            # Decrease the width of the rectangle.
-            # Check if the rectangle still has a positive width.
-            if w - amplitude > 0:
-                temprect = rectangles.copy()
-                temprect[i] = (x, y, w - amplitude, h)
-                larea_white, larea_black = match_area(image, temprect, outer_rectangle=outer_rectangle)
-                # Avoid division by zero.
-                if larea_white + larea_black == 0:
-                    shape_ratios.append(0)
-                else:
-                    shape_ratios.append(larea_white / (larea_white + larea_black))
-            else:
-                shape_ratios.append(0)
+def subdivide_rectangle(image, contour):
+    """
+    Takes a contour that mistakook multiple keys for a single contour, and subdivides it into the correct note rectangle contours.
+    """
+    bounding_rect = cv2.boundingRect(contour)
 
-            # Increase the height of the rectangle.
-            # Check if the rectangle is still inside the outer rectangle.
-            if y + h + amplitude <= outer_rectangle[1] + outer_rectangle[3]:
-                temprect = rectangles.copy()
-                temprect[i] = (x, y, w, h + amplitude)
-                darea_white, darea_black = match_area(image, temprect, outer_rectangle=outer_rectangle)
-                # Avoid division by zero.
-                if darea_white + darea_black == 0:
-                    shape_ratios.append(0)
-                else:
-                    shape_ratios.append(darea_white / (darea_white + darea_black))
-            else:
-                shape_ratios.append(0)
+    # Use function separate_contours with different threshold values, and keep the result with the best area ratio.
+    best_ratio = 0
+    best_separated_contours = None
 
-            # Decrease the height of the rectangle.
-            # Check if the rectangle still has a positive height.
-            if h - amplitude > 0:
-                temprect = rectangles.copy()
-                temprect[i] = (x, y, w, h - amplitude)
-                uarea_white, uarea_black = match_area(image, temprect, outer_rectangle=outer_rectangle)
-                # Avoid division by zero.
-                if uarea_white + uarea_black == 0:
-                    shape_ratios.append(0)
-                else:
-                    shape_ratios.append(uarea_white / (uarea_white + uarea_black))
-            else:
-                shape_ratios.append(0)
+    for thres in range(1, 100, 1):
+        separated_contours = separate_contours(image, contour, threshold=thres)
 
-            # Find the best shape for the rectangle.
-            best_shape = np.argmax(shape_ratios)
+        # Calculate the area ratio of the separated contours
+        rectangle_list = [cv2.boundingRect(c) for c in separated_contours]
 
-            # Compare the best shape with the current shape.
-            if combined_cover_ratio > shape_ratios[best_shape]:
-                return
+        # Max white area
+        max_white_area, black_area = match_area(image, bounding_rect)
+        aw, ab = match_area(image, rectangle_list, bounding_rect)
+        area_ratio = aw / max_white_area
 
-            # Change the shape of the rectangle to the best shape.
-            if best_shape == 0:
-                rectangles[i] = [x, y, w + amplitude, h]
-            elif best_shape == 1:
-                rectangles[i] = [x, y, w - amplitude, h]
-            elif best_shape == 2:
-                rectangles[i] = [x, y, w, h + amplitude]
-            elif best_shape == 3:
-                rectangles[i] = [x, y, w, h - amplitude]
+        if area_ratio > best_ratio:
+            best_ratio = area_ratio
+            best_separated_contours = separated_contours
 
-    # Calculate max area to be covered by white pixels.
-    ref_white, ref_black = match_area(image, rectangle)
+    # Convert the contours to rectangles
+    rectangle_list = [cv2.boundingRect(c) for c in best_separated_contours]
 
-    for num_rectangles in range(1, max_rectangles + 1):
-        rectangles = initial_guess(num_rectangles, rectangle)
-        for step in range(100):  # Repeat optimization steps 10 times
-            # if step < 20:
-            #     ampl = 10
-            # elif step < 40:
-            #     ampl = 5
-            # elif step < 70:
-            #     ampl = 3
-            # else:
-            ampl = 1
-            
-            optimize_position(rectangles, image, rectangle, amplitude=ampl)
-            optimize_shape(rectangles, image, rectangle, amplitude=ampl)
-            areas_white, areas_black = match_area(image, rectangles, outer_rectangle=rectangle)
-            cover_ratio = areas_white / (areas_white + areas_black)
-            print(rectangles)
-            print(f"Areas white: {areas_white}, Areas black: {areas_black}, Cover ratio: {cover_ratio}")
+    # Keep only the rectangles that are within the bounding rectangle
+    rectangle_list = [r for r in rectangle_list if r[0] >= bounding_rect[0] and r[1] >= bounding_rect[1] and r[0] + r[2] <= bounding_rect[0] + bounding_rect[2] and r[1] + r[3] <= bounding_rect[1] + bounding_rect[3]]
 
-            if cover_ratio >= min_cover_ratio:
-                print(f"Found {num_rectangles} rectangles. with cover ratio {cover_ratio}")
-                return rectangles
-        
-        print(f"Best cover ratio {cover_ratio} found with {num_rectangles} rectangles.")
+    # Keep only the rectangles that are not too thin
+    rectangle_list = [r for r in rectangle_list if r[2] >= 5]
 
-#HACK: REMOVE THIS
-    # return [rectangle]
-    return rectangles
+    print(f"Area ratio: {best_ratio}")
+
+    return rectangle_list
+
 
 def detect_rectangles(image):
     """
@@ -290,7 +167,7 @@ def detect_rectangles(image):
     min_cover_ratio = 0.95
 
     for marker in unique_markers:
-        if marker == 0 or marker == 1:
+        if marker == 0 or marker == 1: # Skip the background and the foreground.
             continue
 
         mask = np.zeros_like(image, dtype=np.uint8)
@@ -301,10 +178,6 @@ def detect_rectangles(image):
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
             if w > 0 and h > 0:
-                
-                # HACK: Remove
-                if len(rectangles) > 4:
-                    break
 
                 rect = (x, y, w, h)
                 white_area, black_area = match_area(image, rect)
@@ -315,12 +188,13 @@ def detect_rectangles(image):
                 if area_coverage_ratio < 0.05:
                     print(f"### Skipping rectangle: {rect}")
                     continue # Likely a rectangle enclosing the entire image.
-                elif area_coverage_ratio < min_cover_ratio: # If the area has less than 98% white pixels, the rectangle probably encloses multiple keys.
-                    # sub_rectangles = fit_rectangles(image, rect, min_cover_ratio, 10)
-                    sub_rectangles = fit_rectangles(image, rect, min_cover_ratio, 2)
-                    sr = [tuple(int(a) for a in r) for r in sub_rectangles]
-                    rectangles = rectangles + sr
-                    print(f"Subrectangles: {sub_rectangles}")
+                elif area_coverage_ratio < min_cover_ratio:
+                    print(f"### Subdividing rectangle: {rect}")
+                    # The rectangle may be covering multiple keys.
+                    # Subdivide the rectangle into multiple rectangles.
+                    rects = subdivide_rectangle(image, contour)
+                    print(f"### Result: {rects}")
+                    rectangles += rects
                 else:
                     rectangles.append(rect)
                     print("Single rectangle.")
@@ -331,7 +205,7 @@ def detect_rectangles(image):
     # To help debugging, write the rectangles on top of the image and save it to a file.
     for rect in rectangles:
         x, y, w, h = rect
-        cv2.rectangle(image, (x, y), (x + w, y + h), (150, 20, 200), 2) # If the color isn't visible, change the values.
+        cv2.rectangle(image, (x, y), (x + w, y + h), (150, 150, 150), 2) # If the color isn't visible, change the values.
     
     cv2.imwrite("debug_rectangles.png", image)
 
