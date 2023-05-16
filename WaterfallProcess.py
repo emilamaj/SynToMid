@@ -2,9 +2,7 @@ import cv2
 import numpy as np
 import sys
 import argparse
-import mido
-from mido import Message, MidiFile, MidiTrack
-import random
+import json
 
 
 def preprocess_image(image_file):
@@ -199,64 +197,48 @@ def detect_rectangles(image):
                     rectangles.append(rect)
                     print("Single rectangle.")
 
+    return rectangles
 
-    # return rectangles
-
-    # To help debugging, write the rectangles on top of the image and save it to a file.
+def write_image(image, rectangles, output_file):
+    """
+    To help debugging, write the rectangles on top of the image and save it to a file.
+    """
     for rect in rectangles:
         x, y, w, h = rect
         cv2.rectangle(image, (x, y), (x + w, y + h), (150, 150, 150), 2) # If the color isn't visible, change the values.
     
-    cv2.imwrite("debug_rectangles.png", image)
+    cv2.imwrite(output_file, image)
 
     return rectangles
 
-def convert_notes(rectangles, width, duration, transpose):
+def write_json(rectangles, output_file):
     """
-    Convert the detected rectangles to notes.
+    Write the rectangles to a json file.
     """
-    notes = []
 
-    for rectangle in rectangles:
-        x, y, w, h = rectangle
-        key = round(x / width * 88) + 21 + transpose
-        note_start = round(y / width * duration)
-        note_end = round((y + h) / width * duration)
-        notes.append((key, note_start, note_end))
+    rects = []
+    for rect in rectangles:
+        x, y, w, h = rect
+        rects.append({"x": x, "y": y, "width": w, "height": h})
+    data = {rectangles: rects}
 
-    return notes
-
-def write_midi(notes, filename):
-    """
-    Write the notes to a MIDI file.
-    """
-    midi_file = MidiFile()
-    track = MidiTrack()
-    midi_file.tracks.append(track)
-
-    for note in notes:
-        key, note_start, note_end = note
-        track.append(Message("note_on", note=key, velocity=64, time=note_start))
-        track.append(Message("note_off", note=key, velocity=64, time=note_end))
-
-    midi_file.save(filename)
+    with open(output_file, "w") as f:
+        json.dump(data, f)
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert a Synthesia-style piano roll image to a MIDI file.")
+    parser = argparse.ArgumentParser(description="Convert a Synthesia-style piano roll image to a list of rectangles representing the notes.")
     parser.add_argument("image_file", help="Input image file")
-    parser.add_argument("output_file", help="Output MIDI file")
-    parser.add_argument("duration", type=int, help="Image duration in seconds")
-    parser.add_argument("transpose", type=int, help="Transpose value in semitones (can be negative)")
+    parser.add_argument("output_process", help="Debug image file showing the detected rectangles")
+    parser.add_argument("output_file", help="Output json file listing the rectangles")
 
     args = parser.parse_args()
 
     image = preprocess_image(args.image_file)
     rectangles = detect_rectangles(image)
-    notes = convert_notes(rectangles, image.shape[1], args.duration, args.transpose)
-    write_midi(notes, args.output_file)
+    write_image(image, rectangles, args.output_process)
 
 if __name__ == "__main__":
     main()
 
 # To run the script, use the following command:
-# python WaterfallProcess.py input.png output.mid 30 0
+# python WaterfallProcess.py output_stitch.png output_process.png rectangles.json

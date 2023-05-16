@@ -95,6 +95,7 @@ def stitch_frames(video_path, height, interval, start_time, end_time):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("url", help="The URL of the YouTube video")
+    parser.add_argument("output_file", help="Output MIDI file")
     parser.add_argument("height", type=str, help="The height percentage of the frame to process (e.g., '25%')")
     parser.add_argument("interval", type=float, help="The time interval between frames to process, in seconds")
     parser.add_argument("start_time", type=float, help="The start time of the video, in seconds")
@@ -110,13 +111,13 @@ def main():
     stitched_image = stitch_frames(video_path, height, args.interval, args.start_time, args.end_time)
     t2 = time.time()
     print(f"Stitched frames in {t2 - t1:.2f} seconds")
-    output_file = "output.png"
-    save_image(stitched_image, output_file)
+
+    save_image(stitched_image, args.output_file)
     t3 = time.time()
-    print(f"Stitched image saved to {output_file} in {t3 - t2:.2f} seconds")
+    print(f"Stitched image saved to {args.output_file} in {t3 - t2:.2f} seconds")
 
 if __name__ == "__main__":
     main()
 
 # To run the script, use the following command:
-# python YoutubeStitch.py https://www.youtube.com/watch?v=Zj_psrTUW_w 25% 0.5 5 15
+# python YoutubeStitch.py https://www.youtube.com/watch?v=Zj_psrTUW_w output_stitch.png 25% 0.5 5 15
