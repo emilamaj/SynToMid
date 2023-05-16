@@ -6,7 +6,7 @@ Currently implemented:
 - WaterfallProcess.py: Convert the stitched image to a list of list of rectangles representing the keys pressed. **Very buggy, not yet usable for note extraction.**
 
 Todo:
-- [ ] Implement working version of WaterfallProcess.py, which converts the stitched image to a list of list of rectangles representing the keys pressed.
+- [ ] Better processing of the notes, especially close ones. (Try again pseudo-gradient descent but with cost function in absolute pixels, like L=[10*black_pixels - 1*white_pixels], where the pixels proposed are the ones enclosed by a rectangle. Beware of the fact that close rectangles will mask each otehr, L also needs an overlap term.)
 - [ ] Implement ReadNotes.py, which converts the processed rectangles to a list of notes.
 - [ ] Fix YoutubeStitch.py so that the note timings are respected. (Find average scroll rate, and blindly stitch ? Scroll rate might not be constant...)
 
