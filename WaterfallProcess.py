@@ -220,7 +220,7 @@ def write_json(rectangles, output_file):
     for rect in rectangles:
         x, y, w, h = rect
         rects.append({"x": x, "y": y, "width": w, "height": h})
-    data = {rectangles: rects}
+    data = {"rectangles": rects}
 
     with open(output_file, "w") as f:
         json.dump(data, f)
@@ -236,6 +236,7 @@ def main():
     image = preprocess_image(args.image_file)
     rectangles = detect_rectangles(image)
     write_image(image, rectangles, args.output_process)
+    write_json(rectangles, args.output_file)
 
 if __name__ == "__main__":
     main()
